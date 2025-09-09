@@ -1,0 +1,13 @@
+{
+  "name": "Spi 4-or-8 By Cs Hla",
+  "apiVersion": "1.0.0",
+  "author": "Marco Catellani",
+  "version": "1.0.0",
+  "description": "Saleae HLA extension in top of SPI analyzer. It is useful to detect strobe command (4bit only) used in some chips, like Amiccon A7137",
+  "extensions": {
+    "Spi4or8ByCsHla": {
+      "type": "HighLevelAnalyzer",
+      "entryPoint": "HighLevelAnalyzer.Spi4or8ByCsHla"
+    }
+  }
+}
