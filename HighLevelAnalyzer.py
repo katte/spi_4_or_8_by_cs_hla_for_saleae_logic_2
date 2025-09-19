@@ -9,9 +9,10 @@
 #       * clocks not multiple of 8 (except 4) -> error
 #       * odd nibble count (>1) on MOSI/MISO -> error
 
-from saleae.analyzers import HighLevelAnalyzer, AnalyzerFrame
+from saleae.analyzers import HighLevelAnalyzer, AnalyzerFrame, ChoicesSetting
 
 class Spi4or8ByCsHla(HighLevelAnalyzer):
+    emit_stats_choice = ChoicesSetting(['False','True'])
     result_types = {
         'packet':     {'format': '{{data.dir}}: {{data.info}}'},
         'nibble_ok':  {'format': '{{data.dir}} 4b = {{data.val}}'},
@@ -23,6 +24,20 @@ class Spi4or8ByCsHla(HighLevelAnalyzer):
         # merge: first nibble = HIGH, second = LOW
         self._merge_order = 'high_then_low'
         self._reset_cs_state()
+        self.stats = {
+            'Packets': {
+                'Total packets': 0,
+                '4bit packets': 0,
+                '8bit packets': 0,
+            },
+            'Errors': {
+                'Total errors': 0,
+                'Less than 4 clocks': 0,
+                'Clocks not multiple of 8 and != 4': 0,
+                'MOSI nibble count (odd > 1)': 0,
+                'MISO nibble count (odd > 1)': 0,
+            },
+        }
 
     # ---------- internals ----------
     def _reset_cs_state(self):
@@ -51,6 +66,8 @@ class Spi4or8ByCsHla(HighLevelAnalyzer):
 
         if n == 1:
             v, s, e = nibbles[0]
+            self.stats['Packets']['Total packets'] += 1
+            self.stats['Packets']['4bit packets'] += 1
             items.append({'dir': dir_label, 'kind': 'nibble_ok', 'val': v, 'key_time': s})
             return items
 
@@ -58,11 +75,15 @@ class Spi4or8ByCsHla(HighLevelAnalyzer):
         while i + 1 < n:
             (a, s1, _), (b, _, e2) = nibbles[i], nibbles[i+1]
             byte_val = self._merge_pair(a, b)
+            self.stats['Packets']['Total packets'] += 1
+            self.stats['Packets']['8bit packets'] += 1
             items.append({'dir': dir_label, 'kind': 'byte_ok', 'val': byte_val, 'key_time': s1})
             i += 2
 
         if i < n:
             v, s, e = nibbles[i]
+            self.stats['Packets']['Total packets'] += 1
+            self.stats['Packets']['4bit packets'] += 1
             items.append({'dir': dir_label, 'kind': 'nibble_ok', 'val': v, 'key_time': s})
 
         return items
@@ -84,26 +105,32 @@ class Spi4or8ByCsHla(HighLevelAnalyzer):
         total_bits_est = total_nibbles_est * 4
 
         if total_nibbles_est == 0:
+            self.stats['Errors']['Total errors'] += 1
+            self.stats['Errors']['Less than 4 clocks'] += 1
             items.append({
                 'dir': 'BUS',
                 'kind': 'error',
                 'val': None,
                 'key_time': cs_start,
-                'msg': 'No data in CS: < 4 clocks (no nibble on MOSI/MISO)'
+                'msg': 'Less than 4 clocks'
             })
         else:
-            # not a multiple of 8 (except 4)
+            # not a multiple of 8 (except 4)            
             if not (total_bits_est == 4 or (total_bits_est % 8 == 0)):
+                self.stats['Errors']['Total errors'] += 1
+                self.stats['Errors']['Clocks not multiple of 8 and != 4'] += 1                
                 items.append({
                     'dir': 'BUS',
                     'kind': 'error',
                     'val': None,
                     'key_time': cs_start,
-                    'msg': f'Estimated clocks = {total_bits_est} (not multiple of 8 and != 4)'
+                    'msg': f'Clocks = {total_bits_est} (not multiple of 8 and != 4)'
                 })
 
         # odd (>1) on MOSI
         if nm > 1 and (nm % 2) == 1:
+            self.stats['Errors']['Total errors'] += 1
+            self.stats['Errors']['MOSI nibble count (odd > 1)'] += 1             
             items.append({
                 'dir': 'MOSI',
                 'kind': 'error',
@@ -114,6 +141,8 @@ class Spi4or8ByCsHla(HighLevelAnalyzer):
 
         # odd (>1) on MISO
         if ni > 1 and (ni % 2) == 1:
+            self.stats['Errors']['Total errors'] += 1
+            self.stats['Errors']['MISO nibble count (odd > 1)'] += 1
             items.append({
                 'dir': 'MISO',
                 'kind': 'error',
@@ -171,7 +200,9 @@ class Spi4or8ByCsHla(HighLevelAnalyzer):
                 frames.append(AnalyzerFrame('error', begin, finish, {
                     'msg': it.get('msg', 'Detected anomaly')
                 }))
-
+        if self.emit_stats_choice:
+            for frame in self.generate(finish, step):
+                frames.append(frame)
         return frames
 
     # ---------- HLA API ----------
@@ -210,3 +241,15 @@ class Spi4or8ByCsHla(HighLevelAnalyzer):
 
         # During 'result' we accumulate; no immediate output
         return None
+
+    def generate(self, begin, step):
+        s1 = begin
+        s2 = begin + (step * 0.3)
+        s3 = begin + (step * 0.6)
+        s4 = begin + (step * 0.9)
+        frames = []
+        stats_message = '; '.join(f"{k}: {v}" for k, v in self.stats['Packets'].items())
+        frames.append(AnalyzerFrame('stats', s1, s2, {'info': 'packets', 'msg': stats_message}))
+        stats_message = '; '.join(f"{k}: {v}" for k, v in self.stats['Errors'].items())
+        frames.append(AnalyzerFrame('stats', s3, s4, {'info': 'errors', 'msg': stats_message}))
+        return frames
