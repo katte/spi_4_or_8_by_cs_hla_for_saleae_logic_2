@@ -38,8 +38,12 @@ class Spi4or8ByCsHla(HighLevelAnalyzer):
                 'MISO nibble count (odd > 1)': 0,
             },
         }
+        self.emit_stats_choice = self._as_bool(getattr(self, 'emit_stats_choice', 'False'))
 
     # ---------- internals ----------
+    def _as_bool(self, choice: str) -> bool:
+        return str(choice).lower() in ('true','yes','on','1')    
+    
     def _reset_cs_state(self):
         self.cs_active = False
         self.cs_start  = None
