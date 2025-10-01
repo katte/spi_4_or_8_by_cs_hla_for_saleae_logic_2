@@ -12,12 +12,18 @@
 from saleae.analyzers import HighLevelAnalyzer, AnalyzerFrame, ChoicesSetting
 
 class Spi4or8ByCsHla(HighLevelAnalyzer):
+    analyze_mosi = ChoicesSetting(['True','False'])
+    analyze_miso = ChoicesSetting(['True','False'])
+    emit_cs_packets = ChoicesSetting(['True','False'])
+    emit_good_packets = ChoicesSetting(['True','False'])
+    emit_error_packets = ChoicesSetting(['True','False'])
     emit_stats = ChoicesSetting(['False','True'])
     result_types = {
         'packet':     {'format': '{{data.dir}}: {{data.info}}'},
         'nibble_ok':  {'format': '{{data.dir}} 4b = {{data.val}}'},
         'byte_ok':    {'format': '{{data.dir}} 8b = {{data.val}}'},
         'error':      {'format': 'ERROR: {{data.msg}}'},
+        'stats':      {'format': '{{data.dir}}: {{data.info}}'},
     }
 
     def __init__(self):
@@ -38,7 +44,12 @@ class Spi4or8ByCsHla(HighLevelAnalyzer):
                 'MISO nibble count (odd > 1)': 0,
             },
         }
+        self.emit_cs_packets_choice = self._as_bool(getattr(self, 'emit_cs_packets', 'False'))
+        self.emit_good_packets_choice = self._as_bool(getattr(self, 'emit_good_packets', 'False'))
+        self.emit_error_packets_choice = self._as_bool(getattr(self, 'emit_error_packets', 'False'))
         self.emit_stats_choice = self._as_bool(getattr(self, 'emit_stats', 'False'))
+        self.analyze_mosi_choice = self._as_bool(getattr(self, 'analyze_mosi', 'False'))
+        self.analyze_miso_choice = self._as_bool(getattr(self, 'analyze_miso', 'False'))
 
     # ---------- internals ----------
     def _as_bool(self, choice: str) -> bool:
@@ -73,7 +84,8 @@ class Spi4or8ByCsHla(HighLevelAnalyzer):
             if self.emit_stats_choice:
                 self.stats['Packets']['Total packets'] += 1
                 self.stats['Packets']['4bit packets'] += 1
-            items.append({'dir': dir_label, 'kind': 'nibble_ok', 'val': v, 'key_time': s})
+            if self.emit_good_packets_choice:
+                items.append({'dir': dir_label, 'kind': 'nibble_ok', 'val': v, 'key_time': s})
             return items
 
         i = 0
@@ -83,7 +95,8 @@ class Spi4or8ByCsHla(HighLevelAnalyzer):
             if self.emit_stats_choice:
                 self.stats['Packets']['Total packets'] += 1
                 self.stats['Packets']['8bit packets'] += 1
-            items.append({'dir': dir_label, 'kind': 'byte_ok', 'val': byte_val, 'key_time': s1})
+            if self.emit_good_packets_choice:
+                items.append({'dir': dir_label, 'kind': 'byte_ok', 'val': byte_val, 'key_time': s1})
             i += 2
 
         if i < n:
@@ -91,7 +104,8 @@ class Spi4or8ByCsHla(HighLevelAnalyzer):
             if self.emit_stats_choice:
                 self.stats['Packets']['Total packets'] += 1
                 self.stats['Packets']['4bit packets'] += 1
-            items.append({'dir': dir_label, 'kind': 'nibble_ok', 'val': v, 'key_time': s})
+            if self.emit_good_packets_choice:
+                items.append({'dir': dir_label, 'kind': 'nibble_ok', 'val': v, 'key_time': s})
 
         return items
 
@@ -104,8 +118,14 @@ class Spi4or8ByCsHla(HighLevelAnalyzer):
           - odd nibble count (>1) for MOSI/MISO => error
         """
         items = []
-        nm = len(self.mosi_nibbles)
-        ni = len(self.miso_nibbles)
+        if self.analyze_mosi_choice:
+            nm = len(self.mosi_nibbles)
+        else:
+            nm = 0
+        if self.analyze_miso_choice:
+            ni = len(self.miso_nibbles)
+        else:
+            ni = 0
 
         # clocks estimated from the maximum between MOSI/MISO (each nibble ~ 4 clocks)
         total_nibbles_est = max(nm, ni)
@@ -173,9 +193,12 @@ class Spi4or8ByCsHla(HighLevelAnalyzer):
 
         # 1) Build items: first possible errors, then MOSI/MISO data
         items = []
-        items.extend(self._build_error_items(cs_start, end_time))
-        items.extend(self._build_items_for_dir('MOSI', self.mosi_nibbles))
-        items.extend(self._build_items_for_dir('MISO', self.miso_nibbles))
+        if self.emit_error_packets_choice:
+            items.extend(self._build_error_items(cs_start, end_time))
+        if self.analyze_mosi_choice:
+            items.extend(self._build_items_for_dir('MOSI', self.mosi_nibbles))
+        if self.analyze_miso_choice:
+            items.extend(self._build_items_for_dir('MISO', self.miso_nibbles))
 
         # reset state before creating final frames
         self._reset_cs_state()
@@ -222,12 +245,16 @@ class Spi4or8ByCsHla(HighLevelAnalyzer):
         if frame.type == 'enable':
             self.cs_active = True
             self.cs_start = frame.start_time
-            return AnalyzerFrame('packet', frame.start_time, frame.end_time, {'dir': 'CS', 'info': 'enable'})
+            if self.emit_cs_packets_choice:
+                return AnalyzerFrame('packet', frame.start_time, frame.end_time, {'dir': 'CS', 'info': 'enable'})
+            else:
+                return None
 
         if frame.type == 'disable':
             # End of CS cycle: produce frames and then the 'disable' marker
             out = self._flush_cs(frame.end_time)
-            out.append(AnalyzerFrame('packet', frame.start_time, frame.end_time, {'dir': 'CS', 'info': 'disable'}))
+            if self.emit_cs_packets_choice:
+                out.append(AnalyzerFrame('packet', frame.start_time, frame.end_time, {'dir': 'CS', 'info': 'disable'}))
             return out
 
         if frame.type != 'result':
@@ -242,13 +269,15 @@ class Spi4or8ByCsHla(HighLevelAnalyzer):
         mosi = frame.data.get('mosi')
         miso = frame.data.get('miso')
 
-        if isinstance(mosi, (bytes, bytearray, list, tuple)):
-            for n in mosi:
-                self.mosi_nibbles.append((int(n) & 0xF, frame.start_time, frame.end_time))
+        if self.analyze_mosi_choice:
+            if isinstance(mosi, (bytes, bytearray, list, tuple)):
+                for n in mosi:
+                    self.mosi_nibbles.append((int(n) & 0xF, frame.start_time, frame.end_time))
 
-        if isinstance(miso, (bytes, bytearray, list, tuple)):
-            for n in miso:
-                self.miso_nibbles.append((int(n) & 0xF, frame.start_time, frame.end_time))
+        if self.analyze_miso_choice:
+            if isinstance(miso, (bytes, bytearray, list, tuple)):
+                for n in miso:
+                    self.miso_nibbles.append((int(n) & 0xF, frame.start_time, frame.end_time))
 
         # During 'result' we accumulate; no immediate output
         return None
